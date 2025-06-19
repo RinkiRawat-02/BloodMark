@@ -2,28 +2,35 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename  # Add this line
+from werkzeug.utils import secure_filename
 from models import db, User, Donation, DonorRegistration
-import tensorflow as tf
-import numpy as np
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from utils.predict import predict_blood_group
 import os
 
+# Flask setup
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24).hex()
-# Use absolute path for SQLite database
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///C:/Users/abdhe/OneDrive/Documents/GitHub/BloodMark/instance/bloodmark.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+basedir = os.path.abspath(os.path.dirname(__file__))
 
-# Ensure the instance directory exists
-instance_dir = os.path.join(os.path.dirname(__file__), 'instance')
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'instance', 'bloodmark.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+instance_dir = os.path.join(basedir, 'instance')
 os.makedirs(instance_dir, exist_ok=True)
 
+# Upload folder
+app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'uploads')
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Allowed file types
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'bmp'}
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# DB + Login manager
 db.init_app(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
-
-model = tf.keras.models.load_model(r"C:\Users\abdhe\OneDrive\Documents\GitHub\BloodMark\model\model.h5")
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -32,6 +39,7 @@ def load_user(user_id):
 with app.app_context():
     db.create_all()
 
+# Routes
 @app.route('/')
 @app.route('/land')
 def land():
@@ -70,57 +78,56 @@ def register():
 @app.route('/detection', methods=['GET', 'POST'])
 @login_required
 def detection():
-    upload_dir = os.path.join(os.path.dirname(__file__), 'static', 'uploads')
-    os.makedirs(upload_dir, exist_ok=True)
-    predicted_class = None  # Initialize variable for template
+    predicted_class = None
     if request.method == 'POST':
-        if 'fingerprint' not in request.files:
-            flash('No file uploaded.')
-            return redirect(url_for('detection'))
-        file = request.files['fingerprint']
-        if file.filename == '':
+        file = request.files.get('fingerprint')
+        if not file or file.filename == '':
             flash('No file selected.')
             return redirect(url_for('detection'))
-        if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            flash('Invalid file type. Use PNG or JPG.')
+
+        if not allowed_file(file.filename):
+            flash('Unsupported file format. Please upload PNG, JPG, JPEG, or BMP.')
             return redirect(url_for('detection'))
-        if not file:
-            flash('File is empty or corrupted.')
-            return redirect(url_for('detection'))
+
         filename = secure_filename(file.filename)
-        img_path = os.path.join(upload_dir, filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
         try:
-            file.save(img_path)
-            img = load_img(img_path, target_size=(64, 64))
-            img_array = img_to_array(img) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-            class_names = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
-            prediction = model.predict(img_array)
-            predicted_class = class_names[np.argmax(prediction)]
+            predicted_label, confidence = predict_blood_group(filepath)
+            predicted_class = predicted_label
+            # flash(f'Detected Blood Type: {predicted_label} (Confidence: {confidence:.2f}%)')
+
             new_donation = Donation(
-                blood_type=predicted_class,
+                blood_type=predicted_label,
                 location='Unknown',
                 user_id=current_user.id
             )
             db.session.add(new_donation)
             db.session.commit()
-            flash(f'Predicted blood group: {predicted_class}')
-            return render_template('detection.html', blood_type=predicted_class)
+
         except Exception as e:
-            flash(f'Error processing file: {str(e)}')
+            flash(f'Prediction failed: {str(e)}')
             return redirect(url_for('detection'))
-    return render_template('detection.html', blood_type=predicted_class)
+
+    return render_template('detection.html', result=predicted_class)
+
+
+    
+    
+# Add your donation and registration routes here (unchanged)...
+@app.route('/donation')
+@login_required
+def donation():
+    return render_template('donation.html')
 
 @app.route('/donation/volunteer', methods=['POST'])
 @login_required
 def donation_volunteer():
-    name = request.form['name']
-    phone = request.form['phone']
-    available_days = request.form['available_days']
     new_donation = Donation(
-        name=name,
-        phone=phone,
-        available_days=available_days,
+        name=request.form['name'],
+        phone=request.form['phone'],
+        available_days=request.form['available_days'],
         user_id=current_user.id
     )
     db.session.add(new_donation)
@@ -131,15 +138,11 @@ def donation_volunteer():
 @app.route('/donation/donor', methods=['POST'])
 @login_required
 def donation_donor():
-    location = request.form['location']
-    donors = request.form['donors']
-    donation_date = request.form['donation_date']
-    availability = request.form['availability']
     new_donation = Donation(
-        location=location,
-        donors=donors,
-        donation_date=donation_date,
-        availability=availability,
+        location=request.form['location'],
+        donors=request.form['donors'],
+        donation_date=request.form['donation_date'],
+        availability=request.form['availability'],
         user_id=current_user.id
     )
     db.session.add(new_donation)
@@ -150,13 +153,10 @@ def donation_donor():
 @app.route('/donation/needy', methods=['POST'])
 @login_required
 def donation_needy():
-    patient_name = request.form['patient_name']
-    blood_type = request.form['blood_type']
-    location = request.form['location']
     new_donation = Donation(
-        patient_name=patient_name,
-        blood_type=blood_type,
-        location=location,
+        patient_name=request.form['patient_name'],
+        blood_type=request.form['blood_type'],
+        location=request.form['location'],
         user_id=current_user.id
     )
     db.session.add(new_donation)
@@ -164,48 +164,35 @@ def donation_needy():
     flash('Blood request submitted successfully!')
     return redirect(url_for('donation'))
 
-@app.route('/donation')
-@login_required
-def donation():
-    return render_template('donation.html')
-
 @app.route('/submit_registration', methods=['GET', 'POST'])
 @login_required
 def submit_registration():
     if request.method == 'POST':
-        full_name = request.form['fullName']
-        dob = request.form['dob']
-        gender = request.form['gender']
-        blood_group = request.form['bloodGroup']
-        weight = request.form['weight']
-        contact = request.form['contact']
-        email = request.form['email']
-        address = request.form['address']
-        recent_donation = request.form['recentDonation']
-        medical_conditions = request.form.get('medicalConditions', '')
-        consent = 'consent' in request.form
-        if not consent:
+        if 'consent' not in request.form:
             flash('You must provide consent to register.')
             return redirect(url_for('submit_registration'))
+
         new_registration = DonorRegistration(
-            full_name=full_name,
-            dob=dob,
-            gender=gender,
-            blood_group=blood_group,
-            weight=weight,
-            contact=contact,
-            email=email,
-            address=address,
-            recent_donation=recent_donation,
-            medical_conditions=medical_conditions,
-            consent=consent,
+            full_name=request.form['fullName'],
+            dob=request.form['dob'],
+            gender=request.form['gender'],
+            blood_group=request.form['bloodGroup'],
+            weight=request.form['weight'],
+            contact=request.form['contact'],
+            email=request.form['email'],
+            address=request.form['address'],
+            recent_donation=request.form['recentDonation'],
+            medical_conditions=request.form.get('medicalConditions', ''),
+            consent=True,
             user_id=current_user.id
         )
         db.session.add(new_registration)
         db.session.commit()
         flash('Blood donation registration successful!')
         return redirect(url_for('land'))
+
     return render_template('form.html')
+
 
 @app.route('/logout')
 @login_required

@@ -156,6 +156,12 @@ a {
   color: var(--text-light);
   font-size: 0.85rem;
 }
+.result_display {
+    font-size: 1.1rem;
+    color: #333;
+    border-radius: 5px;
+}
+
 
 .features {
   text-align: center;

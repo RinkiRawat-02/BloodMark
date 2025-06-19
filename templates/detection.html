@@ -47,10 +47,16 @@
         <p>Submit your fingerprint image to begin blood type analysis.</p>
         <form class="upload_form" action="{{ url_for('detection') }}" method="POST" enctype="multipart/form-data">
             <label for="fingerprint">Upload Fingerprint Image</label>
-            <input type="file" id="fingerprint" name="fingerprint" accept="image/png, image/jpeg" required />
-            <small>Supported formats: JPG, PNG (Max size: 5MB)</small>
+            <input type="file" id="fingerprint" name="fingerprint" accept="image/png, image/jpeg, image/bmp" required />
+            <small>Supported formats: JPG, PNG, BMP (Max size: 5MB)</small>
             <button type="submit" class="btn">Upload</button>
         </form>
+        {% if result %}
+        <div class="result_display" style="margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; background: #f9f9f9;">
+            <h3>Detection Result:</h3>
+            <p>{{ result }}</p>
+        </div>
+    {% endif %}
     </section>
 
     <section id="about" class="features section_container">
